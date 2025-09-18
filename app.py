@@ -101,7 +101,7 @@ def plot_stl_with_arrows(mesh, material_name, mass_value, color_by="z", measure_
     fig.update_layout(
         scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z"),
         margin=dict(l=0, r=0, t=0, b=0),
-        height=650
+        height=600
     )
     return fig
 
@@ -113,45 +113,73 @@ st.title("📦 3D Model Mass, Volume & Manual Measurement Tool")
 
 col1, col2 = st.columns([1, 2])
 
+# LEFT COLUMN: Upload & analysis
 with col1:
-    # File upload
     file_type_choice = st.selectbox("Select File Type", ["STL", "STEP", "Parasolid", "NX Part"])
     file_extensions = {"STL":["stl"], "STEP":["step","stp"], "Parasolid":["x_t","x_b"], "NX Part":["prt"]}
-    uploaded_file = st.file_uploader(f"Upload your {file_type_choice} file", type=file_extensions[file_type_choice])
+    uploaded_files = st.file_uploader(f"Upload your {file_type_choice} files", type=file_extensions[file_type_choice], accept_multiple_files=True)
 
     infill_percent = st.slider("Select infill percentage (%)", 0, 100, 100, 5)
     infill = infill_percent / 100.0
 
-    if uploaded_file:
-        ext = uploaded_file.name.split(".")[-1].lower()
-        if ext == "stp": ext="step"
-        st.success(f"✅ Uploaded File: **{uploaded_file.name}** ({uploaded_file.type or 'unknown'}) — {uploaded_file.size/1024:.2f} KB")
-        mesh, model_info, mass_df = calculate_model_data(uploaded_file, ext, infill)
+    all_meshes = {}
+    all_model_info = {}
+    all_mass_dfs = {}
+    measure_lines_dict = {}
 
-        st.subheader("📑 Model Analysis")
-        st.table(pd.DataFrame(model_info.items(), columns=["Property", "Value"]))
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            ext = uploaded_file.name.split(".")[-1].lower()
+            if ext == "stp": ext="step"
+            st.success(f"✅ Uploaded File: **{uploaded_file.name}** ({uploaded_file.type or 'unknown'}) — {uploaded_file.size/1024:.2f} KB")
 
-        st.subheader("⚖️ Mass Estimates")
-        st.dataframe(mass_df, use_container_width=True)
+            mesh, model_info, mass_df = calculate_model_data(uploaded_file, ext, infill)
+            all_meshes[uploaded_file.name] = mesh
+            all_model_info[uploaded_file.name] = model_info
+            all_mass_dfs[uploaded_file.name] = mass_df
 
-        # Manual measurement
-        st.subheader("📐 Manual Measurement")
-        st.write("Enter vertex indices to measure between points:")
-        vertex_count = len(mesh.vertices)
-        point1_idx = st.number_input("Vertex 1 index", 0, vertex_count-1, 0)
-        point2_idx = st.number_input("Vertex 2 index", 0, vertex_count-1, 1)
+            # Manual measurement input
+            st.subheader(f"📐 Manual Measurement: {uploaded_file.name}")
+            vertex_count = len(mesh.vertices)
+            point1_idx = st.number_input(f"Vertex 1 index ({uploaded_file.name})", 0, vertex_count-1, 0, key=f"{uploaded_file.name}_v1")
+            point2_idx = st.number_input(f"Vertex 2 index ({uploaded_file.name})", 0, vertex_count-1, 1, key=f"{uploaded_file.name}_v2")
+            measure_lines_dict[uploaded_file.name] = [[mesh.vertices[point1_idx], mesh.vertices[point2_idx]]]
 
-        measure_lines = [[mesh.vertices[point1_idx], mesh.vertices[point2_idx]]]
-        distance = np.linalg.norm(measure_lines[0][0] - measure_lines[0][1]) / 10
-        st.write(f"Distance: **{distance:.2f} cm**")
-
+# RIGHT COLUMN: Side-by-side 3D Visualization with per-file material selection + model info below each
 with col2:
-    if uploaded_file:
-        st.subheader("🎨 Stress-like 3D Visualization")
-        selected_material = st.selectbox("Select Material", MATERIALS.keys())
-        selected_mass = mass_df.loc[mass_df["Material"]==selected_material, "Mass @100% (g)"].values[0]
-        stress_option = st.radio("Color by:", ["z","curvature","distance"])
-        st.plotly_chart(
-            plot_stl_with_arrows(mesh, selected_material, selected_mass, stress_option, measure_lines),
-            use_container_width=True
-        )
+    if uploaded_files:
+        st.subheader("🎨 3D Visualization Side-by-Side with Model Analysis")
+        n_files = len(all_meshes)
+        cols_per_row = 2
+        rows = (n_files + cols_per_row - 1) // cols_per_row
+        mesh_items = list(all_meshes.items())
+
+        for r in range(rows):
+            row_cols = st.columns(cols_per_row)
+            for c in range(cols_per_row):
+                idx = r * cols_per_row + c
+                if idx >= n_files:
+                    break
+                file_name, mesh = mesh_items[idx]
+                with row_cols[c]:
+                    st.write(f"**{file_name}**")
+                    # Per-file material selection
+                    selected_material = st.selectbox(f"Select Material ({file_name})", MATERIALS.keys(), key=f"mat_{file_name}")
+                    stress_option = st.radio(f"Color by ({file_name}):", ["z","curvature","distance"], key=f"stress_{file_name}")
+                    mass_value = all_mass_dfs[file_name].loc[
+                        all_mass_dfs[file_name]["Material"] == selected_material,
+                        "Mass @100% (g)"
+                    ].values[0]
+                    # Show 3D visualization
+                    st.plotly_chart(
+                        plot_stl_with_arrows(
+                            mesh, selected_material, mass_value,
+                            stress_option, measure_lines_dict[file_name]
+                        ),
+                        use_container_width=True
+                    )
+                    # Show model analysis below the visualization
+                    st.subheader(f"📑 Model Analysis: {file_name}")
+                    st.table(pd.DataFrame(all_model_info[file_name].items(), columns=["Property", "Value"]))
+                    st.subheader(f"⚖️ Mass Estimates: {file_name}")
+                    st.dataframe(all_mass_dfs[file_name], use_container_width=True)
